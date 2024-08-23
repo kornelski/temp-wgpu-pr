@@ -41,22 +41,37 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
             match expr_inner.automatically_converts_to(goal_inner, types) {
                 Some(scalars) => scalars,
                 None => {
-                    let gctx = &self.module.to_ctx();
-                    let source_type = expr_resolution.to_wgsl(gctx).into();
-                    let dest_type = goal_ty.to_wgsl(gctx).into();
-
-                    return Err(super::Error::AutoConversion(Box::new(
-                        AutoConversionError {
-                            dest_span: goal_span,
-                            dest_type,
-                            source_span: expr_span,
-                            source_type,
-                        },
-                    )));
+                    return Err(self.auto_conversion_error(
+                        expr_resolution,
+                        goal_ty,
+                        goal_span,
+                        expr_span,
+                    ))
                 }
             };
 
         self.convert_leaf_scalar(expr, expr_span, goal_scalar)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn auto_conversion_error(
+        &self,
+        expr_resolution: &crate::proc::TypeResolution,
+        goal_ty: &crate::proc::TypeResolution,
+        dest_span: Span,
+        source_span: Span,
+    ) -> super::Error<'source> {
+        let gctx = &self.module.to_ctx();
+        let source_type = expr_resolution.to_wgsl(gctx).into();
+        let dest_type = goal_ty.to_wgsl(gctx).into();
+
+        super::Error::AutoConversion(Box::new(AutoConversionError {
+            dest_span,
+            dest_type,
+            source_span,
+            source_type,
+        }))
     }
 
     /// Try to convert `expr`'s leaf scalar to `goal` using automatic conversions.
@@ -82,20 +97,16 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         let types = &self.module.types;
         let expr_inner = expr_resolution.inner_with(types);
 
-        let make_error = || {
-            let gctx = &self.module.to_ctx();
-            let source_type = expr_resolution.to_wgsl(gctx).into();
-            super::Error::AutoConversionLeafScalar(Box::new(AutoConversionLeafScalarError {
-                dest_span: goal_span,
-                dest_scalar: goal_scalar.to_wgsl().into(),
-                source_span: expr_span,
-                source_type,
-            }))
-        };
-
         let expr_scalar = match expr_inner.scalar() {
             Some(scalar) => scalar,
-            None => return Err(make_error()),
+            None => {
+                return Err(self.auto_conversion_leaf_scalar_error(
+                    expr_resolution,
+                    goal_span,
+                    goal_scalar,
+                    expr_span,
+                ))
+            }
         };
 
         if expr_scalar == goal_scalar {
@@ -103,12 +114,36 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         }
 
         if !expr_scalar.automatically_converts_to(goal_scalar) {
-            return Err(make_error());
+            return Err(self.auto_conversion_leaf_scalar_error(
+                expr_resolution,
+                goal_span,
+                goal_scalar,
+                expr_span,
+            ));
         }
 
         assert!(expr_scalar.is_abstract());
 
         self.convert_leaf_scalar(expr, expr_span, goal_scalar)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn auto_conversion_leaf_scalar_error(
+        &self,
+        expr_resolution: &crate::proc::TypeResolution,
+        dest_span: Span,
+        goal_scalar: crate::Scalar,
+        source_span: Span,
+    ) -> super::Error<'source> {
+        let gctx = &self.module.to_ctx();
+        let source_type = expr_resolution.to_wgsl(gctx).into();
+        super::Error::AutoConversionLeafScalar(Box::new(AutoConversionLeafScalarError {
+            dest_span: dest_span,
+            dest_scalar: goal_scalar.to_wgsl().into(),
+            source_span: source_span,
+            source_type,
+        }))
     }
 
     fn convert_leaf_scalar(
@@ -254,18 +289,23 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
                 expr = self
                     .as_const_evaluator()
                     .cast_array(expr, concretized, expr_span)
-                    .map_err(|err| {
-                        // A `TypeResolution` includes the type's full name, if
-                        // it has one. Also, avoid holding the borrow of `inner`
-                        // across the call to `cast_array`.
-                        let expr_type = &self.typifier()[expr];
-                        super::Error::ConcretizationFailed(Box::new(ConcretizationFailedError {
-                            expr_span,
-                            expr_type: expr_type.to_wgsl(&self.module.to_ctx()).into(),
-                            scalar: concretized.to_wgsl().into(),
-                            inner: err,
-                        }))
-                    })?;
+                    .map_err(
+                        #[cold]
+                        move |err| {
+                            // A `TypeResolution` includes the type's full name, if
+                            // it has one. Also, avoid holding the borrow of `inner`
+                            // across the call to `cast_array`.
+                            let expr_type = &self.typifier()[expr];
+                            super::Error::ConcretizationFailed(Box::new(
+                                ConcretizationFailedError {
+                                    expr_span,
+                                    expr_type: expr_type.to_wgsl(&self.module.to_ctx()).into(),
+                                    scalar: concretized.to_wgsl().into(),
+                                    inner: err,
+                                },
+                            ))
+                        },
+                    )?;
             }
         }
 
