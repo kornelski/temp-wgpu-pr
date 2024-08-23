@@ -12,7 +12,7 @@ mod parse;
 mod tests;
 mod to_wgsl;
 
-use crate::front::wgsl::error::Error;
+use crate::front::wgsl::error::{Error, BoxedError};
 use crate::front::wgsl::parse::Parser;
 use thiserror::Error;
 
@@ -32,10 +32,10 @@ impl Frontend {
     }
 
     pub fn parse(&mut self, source: &str) -> Result<crate::Module, ParseError> {
-        self.inner(source).map_err(|x| x.as_parse_error(source))
+        self.inner(source).map_err(|x| x.0.as_parse_error(source))
     }
 
-    fn inner<'a>(&mut self, source: &'a str) -> Result<crate::Module, Error<'a>> {
+    fn inner<'a>(&mut self, source: &'a str) -> Result<crate::Module, BoxedError<'a>> {
         let tu = self.parser.parse(source)?;
         let index = index::Index::generate(&tu)?;
         let module = Lowerer::new(&index).lower(&tu)?;

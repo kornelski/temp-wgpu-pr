@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 use crate::front::wgsl::parse::ast;
 use crate::{Handle, Span};
 
-use crate::front::wgsl::error::Error;
+use crate::front::wgsl::error::{BoxedError, Error};
 use crate::front::wgsl::lower::{ExpressionContext, Lowerer};
 
 /// A cooked form of `ast::ConstructorType` that uses Naga types whenever
@@ -114,7 +114,7 @@ impl<'source, 'temp> Lowerer<'source, 'temp> {
         ty_span: Span,
         components: &[Handle<ast::Expression<'source>>],
         ctx: &mut ExpressionContext<'source, '_, '_>,
-    ) -> Result<Handle<crate::Expression>, Error<'source>> {
+    ) -> Result<Handle<crate::Expression>, BoxedError<'source>> {
         use crate::proc::TypeResolution as Tr;
 
         let constructor_h = self.constructor(constructor, ctx)?;
@@ -160,14 +160,16 @@ impl<'source, 'temp> Lowerer<'source, 'temp> {
             // Empty constructor
             (Components::None, dst_ty) => match dst_ty {
                 Constructor::Type((result_ty, _)) => {
-                    return ctx.append_expression(crate::Expression::ZeroValue(result_ty), span)
+                    return ctx
+                        .append_expression(crate::Expression::ZeroValue(result_ty), span)
+                        .map_err(From::from)
                 }
                 Constructor::PartialVector { .. }
                 | Constructor::PartialMatrix { .. }
                 | Constructor::PartialArray => {
                     // We have no arguments from which to infer the result type, so
                     // partial constructors aren't acceptable here.
-                    return Err(Error::TypeNotInferable(ty_span));
+                    return Err(Error::TypeNotInferable(ty_span).into());
                 }
             },
 
@@ -535,7 +537,8 @@ impl<'source, 'temp> Lowerer<'source, 'temp> {
                     span,
                     from_type,
                     to_type: constructor.to_error_string(ctx).into(),
-                });
+                }
+                .into());
             }
 
             // Too many parameters for scalar constructor
@@ -544,11 +547,11 @@ impl<'source, 'temp> Lowerer<'source, 'temp> {
                 Constructor::Type((_, &crate::TypeInner::Scalar { .. })),
             ) => {
                 let span = spans[1].until(spans.last().unwrap());
-                return Err(Error::UnexpectedComponents(span));
+                return Err(Error::UnexpectedComponents(span).into());
             }
 
             // Other types can't be constructed
-            _ => return Err(Error::TypeNotConstructible(ty_span)),
+            _ => return Err(Error::TypeNotConstructible(ty_span).into()),
         }
 
         let expr = ctx.append_expression(expr, span)?;
@@ -571,7 +574,7 @@ impl<'source, 'temp> Lowerer<'source, 'temp> {
         &mut self,
         constructor: &ast::ConstructorType<'source>,
         ctx: &mut ExpressionContext<'source, '_, 'out>,
-    ) -> Result<Constructor<Handle<crate::Type>>, Error<'source>> {
+    ) -> Result<Constructor<Handle<crate::Type>>, BoxedError<'source>> {
         let handle = match *constructor {
             ast::ConstructorType::Scalar(scalar) => {
                 let ty = ctx.ensure_type_exists(scalar.to_inner_scalar());

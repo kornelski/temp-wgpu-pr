@@ -289,6 +289,17 @@ pub(crate) struct ConcretizationFailedError {
     pub inner: ConstantEvaluatorError,
 }
 
+#[repr(transparent)]
+pub(crate) struct BoxedError<'a>(pub Box<Error<'a>>);
+
+impl<'a> From<Error<'a>> for BoxedError<'a> {
+    #[cold]
+    #[inline(never)]
+    fn from(error: Error<'a>) -> Self {
+        Self(Box::new(error))
+    }
+}
+
 impl<'a> Error<'a> {
     #[cold]
     #[inline(never)]

@@ -5,6 +5,8 @@ use crate::front::wgsl::Scalar;
 use crate::front::SymbolTable;
 use crate::{Arena, FastIndexSet, Handle, ShaderStage, Span};
 
+use super::error::BoxedError;
+
 pub mod ast;
 pub mod conv;
 pub mod lexer;
@@ -84,8 +86,8 @@ impl<'a> ExpressionContext<'a, '_, '_> {
         mut parser: impl FnMut(
             &mut Lexer<'a>,
             &mut Self,
-        ) -> Result<Handle<ast::Expression<'a>>, Error<'a>>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+        ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>>,
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         let start = lexer.start_byte_offset();
         let mut accumulator = parser(lexer, self)?;
         while let Some(op) = classifier(lexer.peek().0) {
@@ -100,13 +102,17 @@ impl<'a> ExpressionContext<'a, '_, '_> {
         Ok(accumulator)
     }
 
-    fn declare_local(&mut self, name: ast::Ident<'a>) -> Result<Handle<ast::Local>, Error<'a>> {
+    fn declare_local(
+        &mut self,
+        name: ast::Ident<'a>,
+    ) -> Result<Handle<ast::Local>, BoxedError<'a>> {
         let handle = self.locals.append(ast::Local, name.span);
         if let Some(old) = self.local_table.add(name.name, handle) {
             Err(Error::Redefinition {
                 previous: self.locals.get_span(old),
                 current: name.span,
-            })
+            }
+            .into())
         } else {
             Ok(handle)
         }
@@ -143,9 +149,9 @@ impl<T> Default for ParsedAttribute<T> {
 }
 
 impl<T> ParsedAttribute<T> {
-    fn set(&mut self, value: T, name_span: Span) -> Result<(), Error<'static>> {
+    fn set(&mut self, value: T, name_span: Span) -> Result<(), BoxedError<'static>> {
         if self.value.is_some() {
-            return Err(Error::RepeatedAttribute(name_span));
+            return Err(Error::RepeatedAttribute(name_span).into());
         }
         self.value = Some(value);
         Ok(())
@@ -170,7 +176,7 @@ impl<'a> BindingParser<'a> {
         name: &'a str,
         name_span: Span,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<(), Error<'a>> {
+    ) -> Result<(), BoxedError<'a>> {
         match name {
             "location" => {
                 lexer.expect(Token::Paren('('))?;
@@ -203,12 +209,12 @@ impl<'a> BindingParser<'a> {
             "invariant" => {
                 self.invariant.set(true, name_span)?;
             }
-            _ => return Err(Error::UnknownAttribute(name_span)),
+            _ => return Err(Error::UnknownAttribute(name_span).into()),
         }
         Ok(())
     }
 
-    fn finish(self, span: Span) -> Result<Option<ast::Binding<'a>>, Error<'a>> {
+    fn finish(self, span: Span) -> Result<Option<ast::Binding<'a>>, BoxedError<'a>> {
         match (
             self.location.value,
             self.built_in.value,
@@ -235,7 +241,7 @@ impl<'a> BindingParser<'a> {
                 })))
             }
             (None, Some(built_in), None, None, false) => Ok(Some(ast::Binding::BuiltIn(built_in))),
-            (_, _, _, _, _) => Err(Error::InconsistentBinding(span)),
+            (_, _, _, _, _) => Err(Error::InconsistentBinding(span).into()),
         }
     }
 }
@@ -271,7 +277,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<ast::SwitchValue<'a>, Error<'a>> {
+    ) -> Result<ast::SwitchValue<'a>, BoxedError<'a>> {
         if let Token::Word("default") = lexer.peek().0 {
             let _ = lexer.next();
             return Ok(ast::SwitchValue::Default);
@@ -298,7 +304,7 @@ impl Parser {
         word: &'a str,
         span: Span,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Option<ast::ConstructorType<'a>>, Error<'a>> {
+    ) -> Result<Option<ast::ConstructorType<'a>>, BoxedError<'a>> {
         if let Some(scalar) = conv::get_scalar_type(word) {
             return Ok(Some(ast::ConstructorType::Scalar(scalar)));
         }
@@ -495,7 +501,7 @@ impl Parser {
             | "texture_storage_1d_array"
             | "texture_storage_2d"
             | "texture_storage_2d_array"
-            | "texture_storage_3d" => return Err(Error::TypeNotConstructible(span)),
+            | "texture_storage_3d" => return Err(Error::TypeNotConstructible(span).into()),
             _ => return Ok(None),
         };
 
@@ -513,7 +519,7 @@ impl Parser {
                         rows,
                         width: scalar.width,
                     })),
-                    _ => Err(Error::BadMatrixScalarKind(span, scalar)),
+                    _ => Err(Error::BadMatrixScalarKind(span, scalar).into()),
                 }
             }
             (Token::Paren('<'), ast::ConstructorType::PartialArray) => {
@@ -538,7 +544,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Vec<Handle<ast::Expression<'a>>>, Error<'a>> {
+    ) -> Result<Vec<Handle<ast::Expression<'a>>>, BoxedError<'a>> {
         lexer.open_arguments()?;
         let mut arguments = Vec::new();
         loop {
@@ -564,7 +570,7 @@ impl Parser {
         name: &'a str,
         name_span: Span,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         assert!(self.rules.last().is_some());
 
         let expr = match name {
@@ -630,7 +636,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         self.push_rule_span(Rule::PrimaryExpr, lexer);
 
         let expr = match lexer.peek() {
@@ -689,7 +695,9 @@ impl Parser {
                     ast::Expression::Ident(ident)
                 }
             }
-            other => return Err(Error::Unexpected(other.1, ExpectedToken::PrimaryExpression)),
+            other => {
+                return Err(Error::Unexpected(other.1, ExpectedToken::PrimaryExpression).into())
+            }
         };
 
         let span = self.pop_rule_span(lexer);
@@ -703,7 +711,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
         expr: Handle<ast::Expression<'a>>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         let mut expr = expr;
 
         loop {
@@ -736,7 +744,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         self.push_rule_span(Rule::UnaryExpr, lexer);
         //TODO: refactor this to avoid backing up
         let expr = match lexer.peek().0 {
@@ -796,7 +804,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         let start = lexer.start_byte_offset();
         self.push_rule_span(Rule::SingularExpr, lexer);
         let primary_expr = self.primary_expression(lexer, ctx)?;
@@ -810,7 +818,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         context: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         // equality_expression
         context.parse_binary_op(
             lexer,
@@ -886,7 +894,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Handle<ast::Expression<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Expression<'a>>, BoxedError<'a>> {
         self.general_expression_with_span(lexer, ctx)
             .map(|(expr, _)| expr)
     }
@@ -895,7 +903,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         context: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<(Handle<ast::Expression<'a>>, Span), Error<'a>> {
+    ) -> Result<(Handle<ast::Expression<'a>>, Span), BoxedError<'a>> {
         self.push_rule_span(Rule::GeneralExpr, lexer);
         // logical_or_expression
         let handle = context.parse_binary_op(
@@ -959,7 +967,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<ast::GlobalVariable<'a>, Error<'a>> {
+    ) -> Result<ast::GlobalVariable<'a>, BoxedError<'a>> {
         self.push_rule_span(Rule::VariableDecl, lexer);
         let mut space = crate::AddressSpace::Handle;
 
@@ -1005,7 +1013,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Vec<ast::StructMember<'a>>, Error<'a>> {
+    ) -> Result<Vec<ast::StructMember<'a>>, BoxedError<'a>> {
         let mut members = Vec::new();
 
         lexer.expect(Token::Paren('{'))?;
@@ -1015,7 +1023,8 @@ impl Parser {
                 return Err(Error::Unexpected(
                     lexer.next().1,
                     ExpectedToken::Token(Token::Separator(',')),
-                ));
+                )
+                .into());
             }
             let (mut size, mut align) = (ParsedAttribute::default(), ParsedAttribute::default());
             self.push_rule_span(Rule::Attribute, lexer);
@@ -1063,7 +1072,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         columns: crate::VectorSize,
         rows: crate::VectorSize,
-    ) -> Result<ast::Type<'a>, Error<'a>> {
+    ) -> Result<ast::Type<'a>, BoxedError<'a>> {
         let (scalar, span) = lexer.next_scalar_generic_with_span()?;
         match scalar.kind {
             crate::ScalarKind::Float => Ok(ast::Type::Matrix {
@@ -1071,7 +1080,7 @@ impl Parser {
                 rows,
                 width: scalar.width,
             }),
-            _ => Err(Error::BadMatrixScalarKind(span, scalar)),
+            _ => Err(Error::BadMatrixScalarKind(span, scalar).into()),
         }
     }
 
@@ -1080,7 +1089,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         word: &'a str,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Option<ast::Type<'a>>, Error<'a>> {
+    ) -> Result<Option<ast::Type<'a>>, BoxedError<'a>> {
         if let Some(scalar) = conv::get_scalar_type(word) {
             return Ok(Some(ast::Type::Scalar(scalar)));
         }
@@ -1479,7 +1488,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Handle<ast::Type<'a>>, Error<'a>> {
+    ) -> Result<Handle<ast::Type<'a>>, BoxedError<'a>> {
         self.push_rule_span(Rule::TypeDecl, lexer);
 
         let (name, span) = lexer.next_ident_with_span()?;
@@ -1508,7 +1517,7 @@ impl Parser {
         block: &mut ast::Block<'a>,
         target: Handle<ast::Expression<'a>>,
         span_start: usize,
-    ) -> Result<(), Error<'a>> {
+    ) -> Result<(), BoxedError<'a>> {
         use crate::BinaryOperator as Bo;
 
         let op = lexer.next();
@@ -1550,7 +1559,7 @@ impl Parser {
                 });
                 return Ok(());
             }
-            _ => return Err(Error::Unexpected(op.1, ExpectedToken::Assignment)),
+            _ => return Err(Error::Unexpected(op.1, ExpectedToken::Assignment).into()),
         };
 
         let span = lexer.span_from(span_start);
@@ -1567,7 +1576,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
         block: &mut ast::Block<'a>,
-    ) -> Result<(), Error<'a>> {
+    ) -> Result<(), BoxedError<'a>> {
         let span_start = lexer.start_byte_offset();
         let target = self.general_expression(lexer, ctx)?;
         self.assignment_op_and_rhs(lexer, ctx, block, target, span_start)
@@ -1583,7 +1592,7 @@ impl Parser {
         span_start: usize,
         context: &mut ExpressionContext<'a, '_, '_>,
         block: &mut ast::Block<'a>,
-    ) -> Result<(), Error<'a>> {
+    ) -> Result<(), BoxedError<'a>> {
         self.push_rule_span(Rule::SingularExpr, lexer);
 
         context.unresolved.insert(ast::Dependency {
@@ -1614,7 +1623,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         context: &mut ExpressionContext<'a, '_, '_>,
         block: &mut ast::Block<'a>,
-    ) -> Result<(), Error<'a>> {
+    ) -> Result<(), BoxedError<'a>> {
         let span_start = lexer.start_byte_offset();
         match lexer.peek() {
             (Token::Word(name), span) => {
@@ -1641,7 +1650,7 @@ impl Parser {
         ctx: &mut ExpressionContext<'a, '_, '_>,
         block: &mut ast::Block<'a>,
         brace_nesting_level: u8,
-    ) -> Result<(), Error<'a>> {
+    ) -> Result<(), BoxedError<'a>> {
         self.push_rule_span(Rule::Statement, lexer);
         match lexer.peek() {
             (Token::Separator(';'), _) => {
@@ -1825,7 +1834,9 @@ impl Parser {
                                 }
                                 (Token::Paren('}'), _) => break,
                                 (_, span) => {
-                                    return Err(Error::Unexpected(span, ExpectedToken::SwitchItem))
+                                    return Err(
+                                        Error::Unexpected(span, ExpectedToken::SwitchItem).into()
+                                    )
                                 }
                             }
                         }
@@ -1839,7 +1850,7 @@ impl Parser {
 
                         let (condition, span) = lexer.capture_span(|lexer| {
                             let condition = self.general_expression(lexer, ctx)?;
-                            Ok(condition)
+                            Ok::<_, BoxedError>(condition)
                         })?;
                         let mut reject = ast::Block::default();
                         reject.stmts.push(ast::Statement {
@@ -1889,7 +1900,7 @@ impl Parser {
                                     ast::StatementKind::Call { .. }
                                     | ast::StatementKind::Assign { .. }
                                     | ast::StatementKind::LocalDecl(_) => {}
-                                    _ => return Err(Error::InvalidForInitializer(span)),
+                                    _ => return Err(Error::InvalidForInitializer(span).into()),
                                 }
                             }
                         };
@@ -1899,7 +1910,7 @@ impl Parser {
                             let (condition, span) = lexer.capture_span(|lexer| {
                                 let condition = self.general_expression(lexer, ctx)?;
                                 lexer.expect(Token::Separator(';'))?;
-                                Ok(condition)
+                                Ok::<_, BoxedError>(condition)
                             })?;
                             let mut reject = ast::Block::default();
                             reject.stmts.push(ast::Statement {
@@ -1948,7 +1959,7 @@ impl Parser {
                         let (peeked_token, peeked_span) = lexer.peek();
                         if let Token::Word("if") = peeked_token {
                             let span = span.until(&peeked_span);
-                            return Err(Error::InvalidBreakIf(span));
+                            return Err(Error::InvalidBreakIf(span).into());
                         }
                         lexer.expect(Token::Separator(';'))?;
                         ast::StatementKind::Break
@@ -1989,7 +2000,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
         brace_nesting_level: u8,
-    ) -> Result<ast::StatementKind<'a>, Error<'a>> {
+    ) -> Result<ast::StatementKind<'a>, BoxedError<'a>> {
         let _ = lexer.next();
         let mut body = ast::Block::default();
         let mut continuing = ast::Block::default();
@@ -2069,7 +2080,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
         brace_nesting_level: u8,
-    ) -> Result<(ast::Block<'a>, Span), Error<'a>> {
+    ) -> Result<(ast::Block<'a>, Span), BoxedError<'a>> {
         self.push_rule_span(Rule::Block, lexer);
 
         ctx.local_table.push_scope();
@@ -2091,7 +2102,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         ctx: &mut ExpressionContext<'a, '_, '_>,
-    ) -> Result<Option<ast::Binding<'a>>, Error<'a>> {
+    ) -> Result<Option<ast::Binding<'a>>, BoxedError<'a>> {
         let mut bind_parser = BindingParser::default();
         self.push_rule_span(Rule::Attribute, lexer);
 
@@ -2109,7 +2120,7 @@ impl Parser {
         lexer: &mut Lexer<'a>,
         out: &mut ast::TranslationUnit<'a>,
         dependencies: &mut FastIndexSet<ast::Dependency<'a>>,
-    ) -> Result<ast::Function<'a>, Error<'a>> {
+    ) -> Result<ast::Function<'a>, BoxedError<'a>> {
         self.push_rule_span(Rule::FunctionDecl, lexer);
         // read function name
         let fun_name = lexer.next_ident()?;
@@ -2136,7 +2147,8 @@ impl Parser {
                 return Err(Error::Unexpected(
                     lexer.next().1,
                     ExpectedToken::Token(Token::Separator(',')),
-                ));
+                )
+                .into());
             }
             let binding = self.varying_binding(lexer, &mut ctx)?;
 
@@ -2191,7 +2203,7 @@ impl Parser {
         &mut self,
         lexer: &mut Lexer<'a>,
         out: &mut ast::TranslationUnit<'a>,
-    ) -> Result<(), Error<'a>> {
+    ) -> Result<(), BoxedError<'a>> {
         // read attributes
         let mut binding = None;
         let mut stage = ParsedAttribute::default();
@@ -2251,7 +2263,8 @@ impl Parser {
                                 return Err(Error::Unexpected(
                                     other.1,
                                     ExpectedToken::WorkgroupSizeSeparator,
-                                ))
+                                )
+                                .into())
                             }
                         }
                     }
@@ -2268,7 +2281,7 @@ impl Parser {
                     };
                     early_depth_test.set(crate::EarlyDepthTest { conservative }, name_span)?;
                 }
-                (_, word_span) => return Err(Error::UnknownAttribute(word_span)),
+                (_, word_span) => return Err(Error::UnknownAttribute(word_span).into()),
             }
         }
 
@@ -2280,8 +2293,8 @@ impl Parser {
                     binding: index,
                 });
             }
-            (Some(_), None) => return Err(Error::MissingAttribute("binding", attrib_span)),
-            (None, Some(_)) => return Err(Error::MissingAttribute("group", attrib_span)),
+            (Some(_), None) => return Err(Error::MissingAttribute("binding", attrib_span).into()),
+            (None, Some(_)) => return Err(Error::MissingAttribute("group", attrib_span).into()),
             (None, None) => {}
         }
 
@@ -2353,7 +2366,7 @@ impl Parser {
                 Some(ast::GlobalDeclKind::Fn(ast::Function {
                     entry_point: if let Some(stage) = stage.value {
                         if stage == ShaderStage::Compute && workgroup_size.value.is_none() {
-                            return Err(Error::MissingWorkgroupSize(compute_span));
+                            return Err(Error::MissingWorkgroupSize(compute_span).into());
                         }
                         Some(ast::EntryPoint {
                             stage,
@@ -2367,7 +2380,7 @@ impl Parser {
                 }))
             }
             (Token::End, _) => return Ok(()),
-            other => return Err(Error::Unexpected(other.1, ExpectedToken::GlobalItem)),
+            other => return Err(Error::Unexpected(other.1, ExpectedToken::GlobalItem).into()),
         };
 
         if let Some(kind) = kind {
@@ -2380,16 +2393,19 @@ impl Parser {
         if !self.rules.is_empty() {
             log::error!("Reached the end of global decl, but rule stack is not empty");
             log::error!("Rules: {:?}", self.rules);
-            return Err(Error::Internal("rule stack is not empty"));
+            return Err(Error::Internal("rule stack is not empty").into());
         };
 
         match binding {
             None => Ok(()),
-            Some(_) => Err(Error::Internal("we had the attribute but no var?")),
+            Some(_) => Err(Error::Internal("we had the attribute but no var?").into()),
         }
     }
 
-    pub fn parse<'a>(&mut self, source: &'a str) -> Result<ast::TranslationUnit<'a>, Error<'a>> {
+    pub fn parse<'a>(
+        &mut self,
+        source: &'a str,
+    ) -> Result<ast::TranslationUnit<'a>, BoxedError<'a>> {
         self.reset();
 
         let mut lexer = Lexer::new(source);

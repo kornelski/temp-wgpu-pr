@@ -616,7 +616,7 @@ fn parse_repeated_attributes() {
 
         let result = Frontend::new().inner(&shader);
         assert!(matches!(
-            result.unwrap_err(),
+            *result.unwrap_err().0,
             Error::RepeatedAttribute(span) if span == expected_span
         ));
     }
@@ -632,7 +632,7 @@ fn parse_missing_workgroup_size() {
     let shader = "@compute fn vs() -> vec4<f32> { return vec4<f32>(0.0); }";
     let result = Frontend::new().inner(shader);
     assert!(matches!(
-        result.unwrap_err(),
+        *result.unwrap_err().0,
         Error::MissingWorkgroupSize(span) if span == Span::new(1, 8)
     ));
 }

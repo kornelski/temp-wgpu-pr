@@ -1,7 +1,7 @@
 //! WGSL's automatic conversions for abstract types.
 
 use crate::front::wgsl::error::{
-    AutoConversionError, AutoConversionLeafScalarError, ConcretizationFailedError,
+    AutoConversionError, AutoConversionLeafScalarError, BoxedError, ConcretizationFailedError,
 };
 use crate::{Handle, Span};
 
@@ -91,7 +91,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         expr: Handle<crate::Expression>,
         goal_scalar: crate::Scalar,
         goal_span: Span,
-    ) -> Result<Handle<crate::Expression>, super::Error<'source>> {
+    ) -> Result<Handle<crate::Expression>, BoxedError<'source>> {
         let expr_span = self.get_expression_span(expr);
         let expr_resolution = super::resolve!(self, expr);
         let types = &self.module.types;
@@ -124,7 +124,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
 
         assert!(expr_scalar.is_abstract());
 
-        self.convert_leaf_scalar(expr, expr_span, goal_scalar)
+        Ok(self.convert_leaf_scalar(expr, expr_span, goal_scalar)?)
     }
 
     #[cold]
@@ -135,7 +135,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         dest_span: Span,
         goal_scalar: crate::Scalar,
         source_span: Span,
-    ) -> super::Error<'source> {
+    ) -> BoxedError<'source> {
         let gctx = &self.module.to_ctx();
         let source_type = expr_resolution.to_wgsl(gctx).into();
         super::Error::AutoConversionLeafScalar(Box::new(AutoConversionLeafScalarError {
@@ -144,6 +144,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
             source_span: source_span,
             source_type,
         }))
+        .into()
     }
 
     fn convert_leaf_scalar(
@@ -173,7 +174,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         exprs: &mut [Handle<crate::Expression>],
         goal_ty: &crate::proc::TypeResolution,
         goal_span: Span,
-    ) -> Result<(), super::Error<'source>> {
+    ) -> Result<(), BoxedError<'source>> {
         for expr in exprs.iter_mut() {
             *expr = self.try_automatic_conversions(*expr, goal_ty, goal_span)?;
         }
@@ -194,7 +195,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         exprs: &mut [Handle<crate::Expression>],
         goal_scalar: crate::Scalar,
         goal_span: Span,
-    ) -> Result<(), super::Error<'source>> {
+    ) -> Result<(), BoxedError<'source>> {
         use crate::proc::TypeResolution as Tr;
         use crate::TypeInner as Ti;
         let goal_scalar_res = Tr::Value(Ti::Scalar(goal_scalar));
@@ -219,9 +220,9 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
                 }
                 _ => {
                     let span = self.get_expression_span(*expr);
-                    return Err(super::Error::InvalidConstructorComponentType(
-                        span, i as i32,
-                    ));
+                    return Err(
+                        super::Error::InvalidConstructorComponentType(span, i as i32).into(),
+                    );
                 }
             }
         }
@@ -234,7 +235,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         &mut self,
         expr: &mut Handle<crate::Expression>,
         goal: crate::Scalar,
-    ) -> Result<(), super::Error<'source>> {
+    ) -> Result<(), BoxedError<'source>> {
         let inner = super::resolve_inner!(self, *expr);
         // Do nothing if `inner` doesn't even have leaf scalars;
         // it's a type error that validation will catch.
@@ -265,7 +266,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
         &mut self,
         exprs: &mut [Handle<crate::Expression>],
         goal: crate::Scalar,
-    ) -> Result<(), super::Error<'source>> {
+    ) -> Result<(), BoxedError<'source>> {
         for expr in exprs.iter_mut() {
             self.convert_to_leaf_scalar(expr, goal)?;
         }
@@ -279,7 +280,7 @@ impl<'source, 'temp, 'out> super::ExpressionContext<'source, 'temp, 'out> {
     pub fn concretize(
         &mut self,
         mut expr: Handle<crate::Expression>,
-    ) -> Result<Handle<crate::Expression>, super::Error<'source>> {
+    ) -> Result<Handle<crate::Expression>, BoxedError<'source>> {
         let inner = super::resolve_inner!(self, expr);
         if let Some(scalar) = inner.automatically_convertible_scalar(&self.module.types) {
             let concretized = scalar.concretize();
